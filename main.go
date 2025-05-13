@@ -8,6 +8,10 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strings"
+
+	_ "github.com/go-sql-driver/mysql"
+	"github.com/gorilla/mux"
 )
 
 var g_db *sql.DB
@@ -28,11 +32,15 @@ func main() {
 
 	defer db.Close()
 
-	http.HandleFunc("/shorten", shorten)
+	router := mux.NewRouter()
+
+	router.HandleFunc("/shorten", shorten).Methods("POST")
+
+	router.HandleFunc("/redirect/{url}", redirect).Methods("GET")
 
 	fmt.Println("Server starting at port: 8080")
 
-	if err := http.ListenAndServe(":8080", nil); err != nil {
+	if err := http.ListenAndServe(":8080", router); err != nil {
 		log.Fatal(err)
 	}
 }
@@ -70,7 +78,6 @@ func shorten(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(url_shortener)
-
 }
 
 func generateShortURL() string {
@@ -80,7 +87,7 @@ func generateShortURL() string {
 		panic(err.Error())
 	}
 
-	return base64.StdEncoding.EncodeToString(b)
+	return base64.URLEncoding.WithPadding(base64.NoPadding).EncodeToString(b)
 }
 
 func addURL(urlshortener *URLShortener) (int64, error) {
@@ -95,4 +102,42 @@ func addURL(urlshortener *URLShortener) (int64, error) {
 	}
 
 	return id, nil
+}
+
+func redirect(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	params := mux.Vars(r)
+	url := params["url"]
+
+	url_shortener, err := getURL(url)
+	if err != nil {
+		fmt.Println(err)
+		http.Error(w, "URL is not valid", http.StatusNotFound)
+		return
+	}
+
+	redirectURL := url_shortener.Long_url
+	if !strings.HasPrefix(redirectURL, "http://") && !strings.HasPrefix(redirectURL, "https://") {
+		redirectURL = "http://" + redirectURL
+	}
+
+	http.Redirect(w, r, redirectURL, http.StatusFound)
+}
+
+func getURL(short_url string) (URLShortener, error) {
+	var url_shortener URLShortener
+	row := g_db.QueryRow("SELECT short_code, original_url FROM urls WHERE short_code = ?", short_url)
+
+	if err := row.Scan(&url_shortener.Short_url, &url_shortener.Long_url); err != nil {
+		if err == sql.ErrNoRows {
+			return url_shortener, fmt.Errorf("getURL: %v", err)
+		}
+		return url_shortener, fmt.Errorf("getURL: %v", err)
+	}
+
+	return url_shortener, nil
 }
